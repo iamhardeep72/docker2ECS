@@ -6,49 +6,45 @@ on:
       - main  # Triggers on every push to main branch
 
 jobs:
-  build-and-deploy:
+  deploy:
     runs-on: ubuntu-latest
 
     steps:
-      # ─── 1. Checkout Code ───────────────────────────────────────────────
+      # ─── 1. Checkout Code (just to validate, actual deploy happens on EC2) ──
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # ─── 2. Log in to Docker Hub ────────────────────────────────────────
-      - name: Log in to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKER_USERNAME }}
-          password: ${{ secrets.DOCKER_PASSWORD }}
-
-      # ─── 3. Build Docker Image ──────────────────────────────────────────
-      - name: Build Docker image
-        run: |
-          docker build -t ${{ secrets.DOCKER_USERNAME }}/credit-default-app:latest .
-
-      # ─── 4. Push Docker Image to Docker Hub ─────────────────────────────
-      - name: Push Docker image
-        run: |
-          docker push ${{ secrets.DOCKER_USERNAME }}/credit-default-app:latest
-
-      # ─── 5. Deploy to EC2 via SSH ────────────────────────────────────────
-      - name: Deploy to EC2
+      # ─── 2. SSH into EC2 and deploy directly from GitHub ─────────────────────
+      - name: Deploy on EC2 via SSH
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
           script: |
-            # Pull the latest image
-            docker pull ${{ secrets.DOCKER_USERNAME }}/credit-default-app:latest
 
-            # Stop and remove old container if running
+            # ── If repo not cloned yet, clone it; otherwise pull latest ──
+            if [ ! -d "/home/$USER/app/.git" ]; then
+              git clone https://github.com/${{ secrets.GH_REPO }}.git /home/$USER/app
+            else
+              cd /home/$USER/app && git pull origin main
+            fi
+
+            # ── Move into project folder ──
+            cd /home/$USER/app
+
+            # ── Stop and remove old container if running ──
             docker stop credit-app || true
-            docker rm credit-app || true
+            docker rm credit-app   || true
 
-            # Run new container
+            # ── Build fresh Docker image from repo code ──
+            docker build -t credit-default-app:latest .
+
+            # ── Run the new container ──
             docker run -d \
               --name credit-app \
               --restart always \
               -p 5000:5000 \
-              ${{ secrets.DOCKER_USERNAME }}/credit-default-app:latest
+              credit-default-app:latest
+
+            echo "✅ Deployment complete!"
